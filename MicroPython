@@ -1,0 +1,50 @@
+from machine import UART, Pin
+import time
+import struct
+
+TX_PIN = 17
+RX_PIN = 16 
+RE_DE_PIN = 18 
+
+uart = UART(1, baudrate=9600, tx=TX_PIN, rx=RX_PIN)
+
+
+re_de = Pin(RE_DE_PIN, Pin.OUT)
+re_de.value(0)
+
+parametros = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
+
+def ler_dados():
+    re_de.value(1) 
+    time.sleep_ms(2)
+    uart.write(parametros)
+    time.sleep_ms(15)
+    re_de.value(0) 
+    
+    time.sleep_ms(200)
+    
+    if uart.any():
+        resposta = uart.read()
+
+        if len(resposta) == 11:
+
+            humidade_bruta = (resposta[3] << 8) | resposta[4]
+            temperatura_bruta = (resposta[5] << 8) | resposta[6]
+            condutividade_bruta = (resposta[7] << 8) | resposta[8]
+            
+            humidade = humidade_bruta / 10.0
+            temperatura = temperatura_bruta / 10.0
+            condutividade = condutividade_bruta 
+            
+            print(f"Humidade: {humidade}%")
+            print(f"Temperatura: {temperatura}°C")
+            print(f"Condutividade: {condutividade} us/cm")
+            print("-" * 20)
+        else:
+            print("Resposta incompleta recebida do sensor.")
+    else:
+        print("Sem resposta do sensor.")
+
+while True:
+    ler_dados() 
+    time.sleep(5)
