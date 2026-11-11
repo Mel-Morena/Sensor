@@ -1,50 +1,134 @@
+
+# Importa a biblioteca para utilizar a comunicação UART
+# e controlar os pinos do Raspberry Pi Pico.
 from machine import UART, Pin
+
+# Importa a biblioteca responsável por funções de tempo,
+# como pausas entre os comandos.
 import time
+
+# Importa a biblioteca para trabalhar com dados binários estruturados.
+# Neste código, ela não está sendo utilizada.
 import struct
 
-TX_PIN = 17
-RX_PIN = 16 
-RE_DE_PIN = 18 
 
+# Define o pino GPIO 17 como TX (transmissão de dados).
+TX_PIN = 17
+
+# Define o pino GPIO 16 como RX (recepção de dados).
+RX_PIN = 16
+
+# Define o pino GPIO 18 para controlar a direção da comunicação RS485.
+RE_DE_PIN = 18
+
+
+# Inicializa a UART 1 do Raspberry Pi Pico.
+# baudrate=9600 define a velocidade de comunicação em 9600 bits por segundo.
+# tx e rx indicam os pinos utilizados para transmitir e receber dados.
 uart = UART(1, baudrate=9600, tx=TX_PIN, rx=RX_PIN)
 
 
+# Configura o pino RE/DE como saída.
+# Esse pino controla se o conversor RS485 vai transmitir ou receber dados.
 re_de = Pin(RE_DE_PIN, Pin.OUT)
+
+# Coloca o conversor no modo de recepção.
+# Em módulos RS485 convencionais, nível baixo (0) habilita a recepção.
 re_de.value(0)
 
+
+# Cria uma sequência de 8 bytes que representa a solicitação
+# enviada ao sensor pelo protocolo Modbus RTU.
+#
+# 0x01 = endereço do sensor.
+# 0x03 = função de leitura de registradores.
+# 0x00, 0x00 = endereço inicial dos registradores.
+# 0x00, 0x03 = quantidade de registradores a serem lidos (3).
+# 0x05, 0xCB = CRC, utilizado para verificar a integridade da mensagem.
 parametros = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
 
+
+# Cria uma função responsável por solicitar e interpretar
+# os dados enviados pelo sensor.
 def ler_dados():
-    re_de.value(1) 
+
+    # Ativa o modo de transmissão do conversor RS485.
+    re_de.value(1)
+
+    # Aguarda 2 milissegundos para estabilizar a mudança de direção.
     time.sleep_ms(2)
+
+    # Envia a solicitação Modbus para o sensor.
     uart.write(parametros)
+
+    # Aguarda 15 milissegundos para garantir que os dados
+    # sejam transmitidos antes de mudar para o modo de recepção.
     time.sleep_ms(15)
-    re_de.value(0) 
-    
+
+    # Desativa a transmissão e ativa a recepção de dados.
+    re_de.value(0)
+
+    # Aguarda 200 milissegundos para que o sensor tenha tempo
+    # de processar a solicitação e enviar sua resposta.
     time.sleep_ms(200)
-    
+
+    # Verifica se existem dados disponíveis para leitura na UART.
     if uart.any():
+
+        # Lê os dados recebidos do sensor.
         resposta = uart.read()
 
+        # Verifica se a resposta recebida possui exatamente 11 bytes.
         if len(resposta) == 11:
 
+            # Junta dois bytes para formar o valor bruto da umidade.
+            # O primeiro byte representa a parte mais significativa.
             humidade_bruta = (resposta[3] << 8) | resposta[4]
+
+            # Junta dois bytes para formar o valor bruto da temperatura.
             temperatura_bruta = (resposta[5] << 8) | resposta[6]
+
+            # Junta dois bytes para formar o valor bruto da condutividade.
             condutividade_bruta = (resposta[7] << 8) | resposta[8]
-            
+
+            # Converte o valor bruto da umidade.
+            # Divide por 10 para obter o valor em porcentagem.
             humidade = humidade_bruta / 10.0
+
+            # Converte o valor bruto da temperatura.
+            # Divide por 10 para obter o valor em graus Celsius.
             temperatura = temperatura_bruta / 10.0
-            condutividade = condutividade_bruta 
-            
+
+            # Mantém o valor da condutividade sem divisão.
+            condutividade = condutividade_bruta
+
+            # Exibe a umidade do solo no terminal.
             print(f"Humidade: {humidade}%")
+
+            # Exibe a temperatura do solo no terminal.
             print(f"Temperatura: {temperatura}°C")
+
+            # Exibe a condutividade elétrica no terminal.
             print(f"Condutividade: {condutividade} us/cm")
+
+            # Exibe uma linha separadora para organizar os resultados.
             print("-" * 20)
+
         else:
+            # Informa que a resposta recebida não possui
+            # o tamanho esperado de 11 bytes.
             print("Resposta incompleta recebida do sensor.")
+
     else:
+        # Informa que nenhum dado foi recebido do sensor.
         print("Sem resposta do sensor.")
 
+
+# Cria um loop infinito para realizar leituras continuamente.
 while True:
-    ler_dados() 
+
+    # Executa a função responsável pela leitura dos dados do sensor.
+    ler_dados()
+
+    # Aguarda 5 segundos antes de realizar uma nova leitura.
     time.sleep(5)
