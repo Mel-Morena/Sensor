@@ -1,4 +1,3 @@
-
 # Importa a biblioteca para utilizar a comunicação UART
 # e controlar os pinos do Raspberry Pi Pico.
 from machine import UART, Pin
