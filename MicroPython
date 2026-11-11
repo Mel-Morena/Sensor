@@ -1,44 +1,26 @@
-# Importa a biblioteca para utilizar a comunicação UART
-# e controlar os pinos do Raspberry Pi Pico.
+# Importa as classes UART (comunicação serial) e Pin (controle de pinos I/O) da biblioteca nativa da placa
 from machine import UART, Pin
-
-# Importa a biblioteca responsável por funções de tempo,
-# como pausas entre os comandos.
+# Importa a biblioteca de tempo para criar atrasos (delays) na execução
 import time
-
-# Importa a biblioteca para trabalhar com dados binários estruturados.
-# Neste código, ela não está sendo utilizada.
+# Importa a biblioteca struct para manipulação de dados binários (embora não esteja sendo usada neste código)
 import struct
 
-
-# Define o pino GPIO 17 como TX (transmissão de dados).
+# Define o pino 17 para transmissão de dados (TX)
 TX_PIN = 17
+# Define o pino 16 para recepção de dados (RX)
+RX_PIN = 16 
+# Define o pino 18 para controle de fluxo do módulo RS485 (RE/DE - Receive Enable / Data Enable)
+RE_DE_PIN = 18 
 
-# Define o pino GPIO 16 como RX (recepção de dados).
-RX_PIN = 16
-
-# Define o pino GPIO 18 para controlar a direção da comunicação RS485.
-RE_DE_PIN = 18
-
-
-# Inicializa a UART 1 do Raspberry Pi Pico.
-# baudrate=9600 define a velocidade de comunicação em 9600 bits por segundo.
-# tx e rx indicam os pinos utilizados para transmitir e receber dados.
+# Inicializa a porta serial UART 1 com velocidade de 9600 baud rate, usando os pinos definidos
 uart = UART(1, baudrate=9600, tx=TX_PIN, rx=RX_PIN)
 
-
-# Configura o pino RE/DE como saída.
-# Esse pino controla se o conversor RS485 vai transmitir ou receber dados.
+# Configura o pino RE/DE como um pino de saída digital
 re_de = Pin(RE_DE_PIN, Pin.OUT)
-
-# Coloca o conversor no modo de recepção.
-# Em módulos RS485 convencionais, nível baixo (0) habilita a recepção.
+# Define o estado inicial do pino como 0 (nível lógico baixo), colocando o RS485 em modo de RECEPÇÃO (escuta)
 re_de.value(0)
 
-
-# Cria uma sequência de 8 bytes que representa a solicitação
-# enviada ao sensor pelo protocolo Modbus RTU.
-#
+# Cria uma sequência de 8 bytes que representa a solicitação enviada ao sensor pelo protocolo Modbus RTU.
 # 0x01 = endereço do sensor.
 # 0x03 = função de leitura de registradores.
 # 0x00, 0x00 = endereço inicial dos registradores.
@@ -46,88 +28,62 @@ re_de.value(0)
 # 0x05, 0xCB = CRC, utilizado para verificar a integridade da mensagem.
 parametros = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
 
-
-# Cria uma função responsável por solicitar e interpretar
-# os dados enviados pelo sensor.
+# Define a função principal que fará a leitura e processamento dos dados
 def ler_dados():
-
-    # Ativa o modo de transmissão do conversor RS485.
-    re_de.value(1)
-
-    # Aguarda 2 milissegundos para estabilizar a mudança de direção.
+    # Coloca o pino RE/DE em 1 (nível alto), ativando o modo de TRANSMISSÃO do módulo RS485
+    re_de.value(1) 
+    # Aguarda 2 milissegundos para estabilizar o barramento antes de enviar
     time.sleep_ms(2)
-
-    # Envia a solicitação Modbus para o sensor.
+    # Envia a requisição (os bytes definidos acima) para o sensor via porta serial
     uart.write(parametros)
-
-    # Aguarda 15 milissegundos para garantir que os dados
-    # sejam transmitidos antes de mudar para o modo de recepção.
+    # Aguarda 15 milissegundos para dar tempo de todos os bytes serem transmitidos fisicamente
     time.sleep_ms(15)
-
-    # Desativa a transmissão e ativa a recepção de dados.
-    re_de.value(0)
-
-    # Aguarda 200 milissegundos para que o sensor tenha tempo
-    # de processar a solicitação e enviar sua resposta.
+    # Retorna o pino RE/DE para 0 (nível baixo), voltando o RS485 para o modo de RECEPÇÃO para aguardar a resposta
+    re_de.value(0) 
+    
+    # Aguarda 200 milissegundos para dar tempo ao sensor de processar o comando e enviar a resposta
     time.sleep_ms(200)
-
-    # Verifica se existem dados disponíveis para leitura na UART.
+    
+    # Verifica se há algum dado disponível no buffer de recepção da UART
     if uart.any():
-
-        # Lê os dados recebidos do sensor.
+        # Lê todos os bytes retornados pelo sensor e guarda na variável 'resposta'
         resposta = uart.read()
 
-        # Verifica se a resposta recebida possui exatamente 11 bytes.
+        # Verifica se a resposta contém exatamente 11 bytes (tamanho esperado para a resposta de 3 registradores via Modbus)
         if len(resposta) == 11:
 
-            # Junta dois bytes para formar o valor bruto da umidade.
-            # O primeiro byte representa a parte mais significativa.
+            # Junta o 4º (índice 3) e o 5º (índice 4) bytes para formar o valor inteiro bruto da umidade
             humidade_bruta = (resposta[3] << 8) | resposta[4]
-
-            # Junta dois bytes para formar o valor bruto da temperatura.
+            # Junta o 6º (índice 5) e o 7º (índice 6) bytes para formar o valor inteiro bruto da temperatura
             temperatura_bruta = (resposta[5] << 8) | resposta[6]
-
-            # Junta dois bytes para formar o valor bruto da condutividade.
+            # Junta o 8º (índice 7) e o 9º (índice 8) bytes para formar o valor inteiro bruto da condutividade
             condutividade_bruta = (resposta[7] << 8) | resposta[8]
-
-            # Converte o valor bruto da umidade.
-            # Divide por 10 para obter o valor em porcentagem.
+            
+            # Divide a umidade por 10 (conforme o datasheet do sensor) para obter o valor real com casa decimal
             humidade = humidade_bruta / 10.0
-
-            # Converte o valor bruto da temperatura.
-            # Divide por 10 para obter o valor em graus Celsius.
+            # Divide a temperatura por 10 para obter o valor real em Graus Celsius
             temperatura = temperatura_bruta / 10.0
-
-            # Mantém o valor da condutividade sem divisão.
-            condutividade = condutividade_bruta
-
-            # Exibe a umidade do solo no terminal.
+            # A condutividade não precisa de divisão, o valor bruto é o valor real
+            condutividade = condutividade_bruta 
+            
+            # Imprime o valor da umidade formatado
             print(f"Humidade: {humidade}%")
-
-            # Exibe a temperatura do solo no terminal.
+            # Imprime o valor da temperatura formatado
             print(f"Temperatura: {temperatura}°C")
-
-            # Exibe a condutividade elétrica no terminal.
+            # Imprime o valor da condutividade formatado
             print(f"Condutividade: {condutividade} us/cm")
-
-            # Exibe uma linha separadora para organizar os resultados.
+            # Imprime uma linha pontilhada para separar visualmente as leituras no terminal
             print("-" * 20)
-
         else:
-            # Informa que a resposta recebida não possui
-            # o tamanho esperado de 11 bytes.
+            # Caso os dados recebidos não tenham 11 bytes, avisa que ocorreu um erro/ruído na comunicação
             print("Resposta incompleta recebida do sensor.")
-
     else:
-        # Informa que nenhum dado foi recebido do sensor.
+        # Caso nenhum dado tenha sido recebido na porta serial após o tempo de espera
         print("Sem resposta do sensor.")
 
-
-# Cria um loop infinito para realizar leituras continuamente.
+# Cria um loop infinito para manter o programa rodando continuamente
 while True:
-
-    # Executa a função responsável pela leitura dos dados do sensor.
-    ler_dados()
-
-    # Aguarda 5 segundos antes de realizar uma nova leitura.
+    # Chama a função que criamos para ler os dados do sensor
+    ler_dados() 
+    # Aguarda 5 segundos antes de repetir o ciclo e fazer uma nova leitura
     time.sleep(5)
