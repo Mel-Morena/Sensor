@@ -54,8 +54,8 @@ def ler_sensor():
     time.sleep_ms(2)
     # Envia os 8 bytes da requisição Modbus para o sensor
     uart.write(REQUISICAO)
-    # Aguarda 15 milissegundos para garantir que todos os bytes saíram fisicamente pelo cabo
-    time.sleep_ms(15)
+    # Aguarda 10 milissegundos para garantir que todos os bytes saíram fisicamente pelo cabo
+    time.sleep_ms(10)
     # Retorna o pino RE/DE para 0 (nível baixo), voltando ao modo de RECEPÇÃO (escuta)
     re_de.value(0)
 
