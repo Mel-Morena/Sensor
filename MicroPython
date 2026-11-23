@@ -1,89 +1,108 @@
-# Importa as classes UART (comunicação serial) e Pin (controle de pinos I/O) da biblioteca nativa da placa
+# Importa as classes UART (comunicação serial) e Pin (controle de pinos) da biblioteca nativa da placa
 from machine import UART, Pin
 # Importa a biblioteca de tempo para criar atrasos (delays) na execução
 import time
-# Importa a biblioteca struct para manipulação de dados binários (embora não esteja sendo usada neste código)
+# Importa a biblioteca struct para converter bytes brutos em números inteiros (positivos e negativos)
 import struct
 
 # Define o pino 17 para transmissão de dados (TX)
 TX_PIN = 17
 # Define o pino 16 para recepção de dados (RX)
-RX_PIN = 16 
-# Define o pino 18 para controle de fluxo do módulo RS485 (RE/DE - Receive Enable / Data Enable)
-RE_DE_PIN = 18 
+RX_PIN = 16
+# Define o pino 18 para controlar a direção do módulo RS485 (RE/DE - Recepção/Transmissão)
+RE_DE_PIN = 18
 
-# Inicializa a porta serial UART 1 com velocidade de 9600 baud rate, usando os pinos definidos
+# Inicializa a porta serial UART 1 com velocidade de 9600 baud rate nos pinos definidos
 uart = UART(1, baudrate=9600, tx=TX_PIN, rx=RX_PIN)
+# Configura o pino RE/DE como saída digital já iniciando em 0 (modo de RECEPÇÃO/escuta)
+re_de = Pin(RE_DE_PIN, Pin.OUT, value=0)
 
-# Configura o pino RE/DE como um pino de saída digital
-re_de = Pin(RE_DE_PIN, Pin.OUT)
-# Define o estado inicial do pino como 0 (nível lógico baixo), colocando o RS485 em modo de RECEPÇÃO (escuta)
-re_de.value(0)
+# Sequência fixa de 8 bytes da solicitação Modbus RTU:
+# 0x01 (endereço do sensor), 0x03 (função leitura), 0x00 0x00 (início), 0x00 0x03 (3 registradores), 0x05 0xCB (CRC)
+REQUISICAO = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
 
-# Cria uma sequência de 8 bytes que representa a solicitação enviada ao sensor pelo protocolo Modbus RTU.
-# 0x01 = endereço do sensor.
-# 0x03 = função de leitura de registradores.
-# 0x00, 0x00 = endereço inicial dos registradores.
-# 0x00, 0x03 = quantidade de registradores a serem lidos (3).
-# 0x05, 0xCB = CRC, utilizado para verificar a integridade da mensagem.
-parametros = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
+# Define a função que calcula o código verificador CRC-16 padrão do protocolo Modbus
+def calcular_crc16(dados):
+    # Inicializa o registrador do CRC com o valor padrão Modbus (todos os 16 bits em 1)
+    crc = 0xFFFF
+    # Percorre cada byte da mensagem recebida
+    for byte in dados:
+        # Faz uma operação lógica XOR entre o CRC atual e o byte lido
+        crc ^= byte
+        # Repete o processo para cada um dos 8 bits do byte
+        for _ in range(8):
+            # Verifica se o bit menos significativo (último bit à direita) é 1
+            if crc & 0x0001:
+                # Desloca 1 bit para a direita e aplica XOR com o polinômio padrão Modbus (0xA001)
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                # Se o último bit for 0, apenas desloca 1 bit para a direita
+                crc >>= 1
+    # Retorna o valor final de 16 bits do CRC calculado
+    return crc
 
-# Define a função principal que fará a leitura e processamento dos dados
-def ler_dados():
-    # Coloca o pino RE/DE em 1 (nível alto), ativando o modo de TRANSMISSÃO do módulo RS485
-    re_de.value(1) 
-    # Aguarda 2 milissegundos para estabilizar o barramento antes de enviar
-    time.sleep_ms(2)
-    # Envia a requisição (os bytes definidos acima) para o sensor via porta serial
-    uart.write(parametros)
-    # Aguarda 15 milissegundos para dar tempo de todos os bytes serem transmitidos fisicamente
-    time.sleep_ms(15)
-    # Retorna o pino RE/DE para 0 (nível baixo), voltando o RS485 para o modo de RECEPÇÃO para aguardar a resposta
-    re_de.value(0) 
-    
-    # Aguarda 200 milissegundos para dar tempo ao sensor de processar o comando e enviar a resposta
-    time.sleep_ms(200)
-    
-    # Verifica se há algum dado disponível no buffer de recepção da UART
+# Define a função responsável por consultar o sensor, validar a resposta e retornar os valores
+def ler_sensor():
+    # Verifica se existe algum dado antigo ou ruído elétrico preso no buffer da UART
     if uart.any():
-        # Lê todos os bytes retornados pelo sensor e guarda na variável 'resposta'
-        resposta = uart.read()
+        # Lê e descarta esse lixo residual para não misturar com a nova resposta
+        uart.read()
 
-        # Verifica se a resposta contém exatamente 11 bytes (tamanho esperado para a resposta de 3 registradores via Modbus)
-        if len(resposta) == 11:
+    # Coloca o pino RE/DE em 1 (nível alto), ativando o modo de TRANSMISSÃO do módulo RS485
+    re_de.value(1)
+    # Aguarda 2 milissegundos para estabilizar o sinal elétrico no barramento
+    time.sleep_ms(2)
+    # Envia os 8 bytes da requisição Modbus para o sensor
+    uart.write(REQUISICAO)
+    # Aguarda 15 milissegundos para garantir que todos os bytes saíram fisicamente pelo cabo
+    time.sleep_ms(15)
+    # Retorna o pino RE/DE para 0 (nível baixo), voltando ao modo de RECEPÇÃO (escuta)
+    re_de.value(0)
 
-            # Junta o 4º (índice 3) e o 5º (índice 4) bytes para formar o valor inteiro bruto da umidade
-            humidade_bruta = (resposta[3] << 8) | resposta[4]
-            # Junta o 6º (índice 5) e o 7º (índice 6) bytes para formar o valor inteiro bruto da temperatura
-            temperatura_bruta = (resposta[5] << 8) | resposta[6]
-            # Junta o 8º (índice 7) e o 9º (índice 8) bytes para formar o valor inteiro bruto da condutividade
-            condutividade_bruta = (resposta[7] << 8) | resposta[8]
-            
-            # Divide a umidade por 10 (conforme o datasheet do sensor) para obter o valor real com casa decimal
-            humidade = humidade_bruta / 10.0
-            # Divide a temperatura por 10 para obter o valor real em Graus Celsius
-            temperatura = temperatura_bruta / 10.0
-            # A condutividade não precisa de divisão, o valor bruto é o valor real
-            condutividade = condutividade_bruta 
-            
-            # Imprime o valor da umidade formatado
-            print(f"Humidade: {humidade}%")
-            # Imprime o valor da temperatura formatado
-            print(f"Temperatura: {temperatura}°C")
-            # Imprime o valor da condutividade formatado
-            print(f"Condutividade: {condutividade} us/cm")
-            # Imprime uma linha pontilhada para separar visualmente as leituras no terminal
-            print("-" * 20)
-        else:
-            # Caso os dados recebidos não tenham 11 bytes, avisa que ocorreu um erro/ruído na comunicação
-            print("Resposta incompleta recebida do sensor.")
-    else:
-        # Caso nenhum dado tenha sido recebido na porta serial após o tempo de espera
-        print("Sem resposta do sensor.")
+    # Aguarda 200 milissegundos para o sensor processar o pedido e responder
+    time.sleep_ms(200)
+    # Se nenhum dado chegou no buffer após a espera, encerra a função retornando None (sem dados)
+    if not uart.any():
+        return None
 
-# Cria um loop infinito para manter o programa rodando continuamente
+    # Lê todos os bytes enviados pelo sensor e armazena na variável 'resposta'
+    resposta = uart.read()
+
+    # Valida a estrutura da resposta: deve ter 11 bytes, ser do sensor 0x01, função 0x03 e conter 6 bytes de dados (0x06)
+    if len(resposta) != 11 or resposta[0] != 0x01 or resposta[1] != 0x03 or resposta[2] != 0x06:
+        # Se qualquer parte do cabeçalho ou tamanho estiver errada, descarta a leitura
+        return None
+
+    # Calcula o CRC-16 apenas sobre os dados úteis da resposta (todos os bytes, exceto os 2 últimos)
+    crc_calculado = calcular_crc16(resposta[:-2])
+    # Extrai o CRC enviado pelo sensor nos 2 últimos bytes ('<H' = inteiro sem sinal de 16 bits em ordem Little-Endian)
+    crc_recebido = struct.unpack('<H', resposta[-2:])[0]
+    # Compara o CRC calculado com o recebido; se forem diferentes, houve interferência/corrupção no cabo
+    if crc_calculado != crc_recebido:
+        # Descarta a leitura corrompida retornando None
+        return None
+
+    # Decodifica os 6 bytes de medição (índices 3 a 8) em três valores de 16 bits (Big-Endian '>'):
+    # 'H' = umidade (sem sinal), 'h' = temperatura (com sinal, permite negativos), 'H' = condutividade (sem sinal)
+    umidade_bruta, temp_bruta, ec_bruta = struct.unpack('>HhH', resposta[3:9])
+
+    # Retorna uma tupla com os valores reais já convertidos (umidade e temp divididos por 10 conforme datasheet)
+    return (umidade_bruta / 10.0, temp_bruta / 10.0, ec_bruta)
+
+# Cria um loop infinito para manter o monitoramento contínuo
 while True:
-    # Chama a função que criamos para ler os dados do sensor
-    ler_dados() 
-    # Aguarda 5 segundos antes de repetir o ciclo e fazer uma nova leitura
+    # Chama a função de leitura e guarda o resultado (tupla de valores ou None) na variável 'dados'
+    dados = ler_sensor()
+
+    # Verifica se a leitura foi bem-sucedida (ou seja, se 'dados' não é None)
+    if dados:
+        # Desempacota os três valores da tupla em variáveis separadas
+        umidade, temperatura, condutividade = dados
+        # Exibe os valores formatados com 1 casa decimal no terminal
+        print(f"Umidade: {umidade:.1f}% | Temp: {temperatura:.1f}°C | EC: {condutividade} uS/cm")
+    else:
+        # Caso a função tenha retornado None, avisa que houve falha de comunicação ou pacote corrompido
+        print("Falha na leitura (sem resposta ou pacote corrompido).")
+
+    # Aguarda 5 segundos antes de iniciar o próximo ciclo de leitura
     time.sleep(5)
