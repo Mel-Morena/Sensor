@@ -1,108 +1,421 @@
-# Importa as classes UART (comunicação serial) e Pin (controle de pinos) da biblioteca nativa da placa
-from machine import UART, Pin
-# Importa a biblioteca de tempo para criar atrasos (delays) na execução
+# 1. IMPORTAÇÃO DAS BIBLIOTECAS
+
+# UART: comunicação serial com o sensor RS485.
+# Pin: controle dos pinos GPIO.
+# SPI: comunicação com o módulo LoRa.
+from machine import UART, Pin, SPI
+
+# Biblioteca para controlar o tempo e os intervalos.
 import time
-# Importa a biblioteca struct para converter bytes brutos em números inteiros (positivos e negativos)
+
+# Biblioteca para converter bytes em valores numéricos.
 import struct
 
-# Define o pino 17 para transmissão de dados (TX)
+# Importa o driver do módulo LoRa SX127x.
+# O arquivo lora.py deve estar salvo no Raspberry Pi Pico.
+from lora import LoRa
+
+# 2. CONFIGURAÇÃO DO SENSOR RS485
+
+# Pino GP17: transmissão UART do Pico para o conversor RS485.
 TX_PIN = 17
-# Define o pino 16 para recepção de dados (RX)
+
+# Pino GP16: recepção UART do conversor RS485 para o Pico.
 RX_PIN = 16
-# Define o pino 18 para controlar a direção do módulo RS485 (RE/DE - Recepção/Transmissão)
+
+# Pino GP18: controla a transmissão e recepção do RS485.
 RE_DE_PIN = 18
 
-# Inicializa a porta serial UART 1 com velocidade de 9600 baud rate nos pinos definidos
-uart = UART(1, baudrate=9600, tx=TX_PIN, rx=RX_PIN)
-# Configura o pino RE/DE como saída digital já iniciando em 0 (modo de RECEPÇÃO/escuta)
+# Inicializa a UART 1 em 9600 bits por segundo.
+# TX e RX são os pinos definidos anteriormente.
+uart = UART(
+    1,
+    baudrate=9600,
+    tx=Pin(TX_PIN),
+    rx=Pin(RX_PIN)
+)
+
+# Inicializa o controle RE/DE.
+# O valor 0 mantém o módulo em modo de recepção.
 re_de = Pin(RE_DE_PIN, Pin.OUT, value=0)
 
-# Sequência fixa de 8 bytes da solicitação Modbus RTU:
-# 0x01 (endereço do sensor), 0x03 (função leitura), 0x00 0x00 (início), 0x00 0x03 (3 registradores), 0x05 0xCB (CRC)
-REQUISICAO = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x05, 0xCB])
+# 3. REQUISIÇÃO MODBUS AO SENSOR
 
-# Define a função que calcula o código verificador CRC-16 padrão do protocolo Modbus
+# Comando para solicitar 3 registradores do sensor.
+# Endereço do dispositivo: 1.
+# Função Modbus: 03 (leitura de registradores).
+# Registrador inicial: 0000.
+# Quantidade: 0003.
+# Os dois últimos bytes correspondem ao CRC.
+REQUISICAO = bytes([
+    0x01, 0x03,
+    0x00, 0x00,
+    0x00, 0x03,
+    0x05, 0xCB
+])
+
+# 4. CÁLCULO DO CRC16 DO MODBUS
+
 def calcular_crc16(dados):
-    # Inicializa o registrador do CRC com o valor padrão Modbus (todos os 16 bits em 1)
+
+    # Valor inicial padrão do CRC Modbus.
     crc = 0xFFFF
-    # Percorre cada byte da mensagem recebida
+
+    # Percorre cada byte da mensagem.
     for byte in dados:
-        # Faz uma operação lógica XOR entre o CRC atual e o byte lido
+
+        # Aplica XOR entre o CRC e o byte atual.
         crc ^= byte
-        # Repete o processo para cada um dos 8 bits do byte
+
+        # Processa os oito bits do byte.
         for _ in range(8):
-            # Verifica se o bit menos significativo (último bit à direita) é 1
+
+            # Verifica se o bit menos significativo está ligado.
             if crc & 0x0001:
-                # Desloca 1 bit para a direita e aplica XOR com o polinômio padrão Modbus (0xA001)
+
+                # Desloca o CRC e aplica o polinômio Modbus.
                 crc = (crc >> 1) ^ 0xA001
+
             else:
-                # Se o último bit for 0, apenas desloca 1 bit para a direita
+
+                # Caso contrário, apenas desloca o CRC.
                 crc >>= 1
-    # Retorna o valor final de 16 bits do CRC calculado
+
+    # Retorna o CRC calculado.
     return crc
 
-# Define a função responsável por consultar o sensor, validar a resposta e retornar os valores
+# 5. FUNÇÃO DE LEITURA DO SENSOR
+
 def ler_sensor():
-    # Verifica se existe algum dado antigo ou ruído elétrico preso no buffer da UART
+
+    # Descarta qualquer dado antigo que esteja no buffer UART.
     if uart.any():
-        # Lê e descarta esse lixo residual para não misturar com a nova resposta
         uart.read()
 
-    # Coloca o pino RE/DE em 1 (nível alto), ativando o modo de TRANSMISSÃO do módulo RS485
+    # Coloca o conversor RS485 em modo de transmissão.
     re_de.value(1)
-    # Aguarda 2 milissegundos para estabilizar o sinal elétrico no barramento
+
+    # Aguarda o conversor estabilizar.
     time.sleep_ms(2)
-    # Envia os 8 bytes da requisição Modbus para o sensor
+
+    # Envia a requisição Modbus ao sensor.
     uart.write(REQUISICAO)
-    # Aguarda 10 milissegundos para garantir que todos os bytes saíram fisicamente pelo cabo
+
+    # Aguarda o envio da requisição.
     time.sleep_ms(10)
-    # Retorna o pino RE/DE para 0 (nível baixo), voltando ao modo de RECEPÇÃO (escuta)
+
+    # Volta o conversor para o modo de recepção.
     re_de.value(0)
 
-    # Aguarda 200 milissegundos para o sensor processar o pedido e responder
+    # Aguarda o sensor responder.
     time.sleep_ms(200)
-    # Se nenhum dado chegou no buffer após a espera, encerra a função retornando None (sem dados)
+
+    # Se não houver dados recebidos, retorna None.
     if not uart.any():
         return None
 
-    # Lê todos os bytes enviados pelo sensor e armazena na variável 'resposta'
+    # Lê os bytes disponíveis no buffer.
     resposta = uart.read()
 
-    # Valida a estrutura da resposta: deve ter 11 bytes, ser do sensor 0x01, função 0x03 e conter 6 bytes de dados (0x06)
-    if len(resposta) != 11 or resposta[0] != 0x01 or resposta[1] != 0x03 or resposta[2] != 0x06:
-        # Se qualquer parte do cabeçalho ou tamanho estiver errada, descarta a leitura
+    # Verifica o tamanho e os campos principais da resposta.
+    if (
+        len(resposta) != 11
+        or resposta[0] != 0x01
+        or resposta[1] != 0x03
+        or resposta[2] != 0x06
+    ):
         return None
 
-    # Calcula o CRC-16 apenas sobre os dados úteis da resposta (todos os bytes, exceto os 2 últimos)
+    # Calcula o CRC dos bytes recebidos,
+    # excluindo os dois últimos bytes.
     crc_calculado = calcular_crc16(resposta[:-2])
-    # Extrai o CRC enviado pelo sensor nos 2 últimos bytes ('<H' = inteiro sem sinal de 16 bits em ordem Little-Endian)
-    crc_recebido = struct.unpack('<H', resposta[-2:])[0]
-    # Compara o CRC calculado com o recebido; se forem diferentes, houve interferência/corrupção no cabo
+
+    # Interpreta o CRC recebido como inteiro
+    # de 16 bits em ordem little-endian.
+    crc_recebido = struct.unpack(
+        '<H',
+        resposta[-2:]
+    )[0]
+
+    # Compara os CRCs para verificar a integridade.
     if crc_calculado != crc_recebido:
-        # Descarta a leitura corrompida retornando None
         return None
 
-    # Decodifica os 6 bytes de medição (índices 3 a 8) em três valores de 16 bits (Big-Endian '>'):
-    # 'H' = umidade (sem sinal), 'h' = temperatura (com sinal, permite negativos), 'H' = condutividade (sem sinal)
-    umidade_bruta, temp_bruta, ec_bruta = struct.unpack('>HhH', resposta[3:9])
+    # Converte os registradores recebidos:
+    # umidade: inteiro de 16 bits sem sinal.
+    # temperatura: inteiro de 16 bits com sinal.
+    # condutividade: inteiro de 16 bits sem sinal.
+    umidade_bruta, temp_bruta, ec_bruta = struct.unpack(
+        '>HhH',
+        resposta[3:9]
+    )
 
-    # Retorna uma tupla com os valores reais já convertidos (umidade e temp divididos por 10 conforme datasheet)
-    return (umidade_bruta / 10.0, temp_bruta / 10.0, ec_bruta)
+    # Ajusta a escala da umidade e temperatura.
+    # O sensor utiliza uma casa decimal nesses valores.
+    umidade = umidade_bruta / 10.0
+    temperatura = temp_bruta / 10.0
 
-# Cria um loop infinito para manter o monitoramento contínuo
+    # Retorna os três valores medidos.
+    return (
+        umidade,
+        temperatura,
+        ec_bruta
+    )
+
+# 6. CONFIGURAÇÃO DO MÓDULO LoRa
+
+# Pinos do SPI0 para comunicação com o módulo LoRa.
+LORA_SCK = 2
+LORA_MOSI = 3
+LORA_MISO = 0
+LORA_CS = 1
+
+# Pino DIO0: sinaliza eventos de recepção do módulo.
+LORA_DIO0 = 10
+
+# Inicializa o barramento SPI.
+spi = SPI(
+    0,
+    baudrate=10000000,
+    polarity=0,
+    phase=0,
+    sck=Pin(LORA_SCK),
+    mosi=Pin(LORA_MOSI),
+    miso=Pin(LORA_MISO)
+)
+
+# 7. RECEBIMENTO DE MENSAGENS LoRa
+
+# Variável global para armazenar a resposta recebida.
+# Inicialmente não há nenhuma mensagem.
+ack_buffer = None
+
+
+# Função executada quando o rádio recebe um pacote.
+def receber_lora(mensagem):
+
+    # A mensagem recebida é guardada para ser
+    # processada no programa principal.
+    global ack_buffer
+
+    ack_buffer = mensagem
+
+# 8. INICIALIZAÇÃO DO RÁDIO
+
+# Cria o objeto que controla o módulo LoRa.
+# Os parâmetros devem ser iguais aos do receptor.
+radio = LoRa(
+    spi,
+
+    # Pino que seleciona o rádio na comunicação SPI.
+    cs=Pin(LORA_CS, Pin.OUT),
+
+    # Pino de interrupção para sinalizar recepção.
+    rx=Pin(LORA_DIO0, Pin.IN),
+
+    # Frequência de comunicação em MHz.
+    frequency=915.0,
+
+    # Largura de banda: 125 kHz.
+    bandwidth=125000,
+
+    # Spreading Factor: SF7.
+    spreading_factor=7,
+
+    # Coding Rate: 4/5.
+    coding_rate=5,
+
+    # Tamanho do preâmbulo: 8 símbolos.
+    preamble_length=8,
+
+    # Habilita verificação CRC dos pacotes LoRa.
+    crc=True,
+
+    # Potência de transmissão: 10 dBm.
+    tx_power=10,
+
+    # Sync Word para diferenciar a rede LoRa.
+    sync_word=0x12,
+
+    # Utiliza cabeçalho explícito.
+    implicit=False
+)
+
+# Registra a função de recepção no rádio.
+radio.on_recv(receber_lora)
+
+# 9. IDENTIFICAÇÃO DO SENSOR E PACOTES
+
+# Identificador deste dispositivo.
+# Cada sensor deverá possuir um ID diferente.
+ID_SENSOR = "S01"
+
+# Número sequencial dos pacotes transmitidos.
+# Ajuda a identificar mensagens e confirmações.
+sequencia = 0
+
+# Tempo máximo de espera pela confirmação.
+TIMEOUT_ACK = 2000
+
+# Número máximo de tentativas de transmissão.
+MAX_TENTATIVAS = 3
+
+# 10. FUNÇÃO DE TRANSMISSÃO LoRa COM ACK
+
+def transmitir_dados(umidade, temperatura, ec, seq):
+
+    # Declara que a variável ack_buffer será global.
+    global ack_buffer
+
+    # Monta a mensagem de dados em formato textual.
+    # Exemplo:
+    # DATA;S01;15;63.2;24.8;1250
+    mensagem = (
+        "DATA;"
+        + ID_SENSOR + ";"
+        + str(seq) + ";"
+        + "{:.1f}".format(umidade) + ";"
+        + "{:.1f}".format(temperatura) + ";"
+        + str(ec)
+    )
+
+    # Converte a mensagem para bytes.
+    pacote = mensagem.encode()
+
+    # Realiza as tentativas de transmissão.
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+
+        # Limpa a confirmação anterior.
+        ack_buffer = None
+
+        # Mostra qual tentativa está sendo realizada.
+        print(
+            "Transmitindo pacote",
+            seq,
+            "- tentativa",
+            tentativa
+        )
+
+        # Envia o pacote pelo rádio.
+        radio.send(pacote)
+
+        # Coloca o rádio em modo de recepção
+        # para aguardar a confirmação do gateway.
+        radio.recv()
+
+        # Marca o início da espera pelo ACK.
+        inicio = time.ticks_ms()
+
+        # Aguarda até o ACK chegar ou o timeout terminar.
+        while time.ticks_diff(
+            time.ticks_ms(),
+            inicio
+        ) < TIMEOUT_ACK:
+
+            # Verifica se uma mensagem foi recebida.
+            if ack_buffer is not None:
+
+                # Converte os bytes recebidos em texto.
+                resposta = ack_buffer.decode()
+
+                # Separa os campos da confirmação.
+                campos = resposta.split(";")
+
+                # Confirma se a resposta é do pacote enviado.
+                if (
+                    len(campos) == 3
+                    and campos[0] == "ACK"
+                    and campos[1] == ID_SENSOR
+                    and campos[2] == str(seq)
+                ):
+
+                    # Confirma que o gateway reconheceu o pacote.
+                    print("ACK recebido:", resposta)
+
+                    # Retorna True: transmissão confirmada.
+                    radio.standby()
+                    return True
+
+            # Pequeno intervalo para não sobrecarregar o processador.
+            time.sleep_ms(20)
+
+        # Se o tempo terminou sem confirmação,
+        # mostra que a tentativa falhou.
+        print("Timeout: ACK não recebido.")
+
+    # Se todas as tentativas falharem,
+    # retorna o rádio ao modo standby.
+    radio.standby()
+
+    # Retorna False: não houve confirmação.
+    return False
+
+# 11. PROGRAMA PRINCIPAL
+
 while True:
-    # Chama a função de leitura e guarda o resultado (tupla de valores ou None) na variável 'dados'
+
+    # Realiza a leitura dos sensores.
     dados = ler_sensor()
 
-    # Verifica se a leitura foi bem-sucedida (ou seja, se 'dados' não é None)
-    if dados:
-        # Desempacota os três valores da tupla em variáveis separadas
-        umidade, temperatura, condutividade = dados
-        # Exibe os valores formatados com 1 casa decimal no terminal
-        print(f"Umidade: {umidade:.1f}% | Temp: {temperatura:.1f}°C | EC: {condutividade} uS/cm")
-    else:
-        # Caso a função tenha retornado None, avisa que houve falha de comunicação ou pacote corrompido
-        print("Falha na leitura (sem resposta ou pacote corrompido).")
+    # Verifica se a leitura foi válida.
+    if dados is not None:
 
-    # Aguarda 5 segundos antes de iniciar o próximo ciclo de leitura
+        # Separa os valores recebidos.
+        umidade, temperatura, condutividade = dados
+
+        # Mostra os valores no console.
+        print("------------------------------")
+
+        print(
+            "Umidade:",
+            "{:.1f}%".format(umidade)
+        )
+
+        print(
+            "Temperatura:",
+            "{:.1f} C".format(temperatura)
+        )
+
+        print(
+            "Condutividade:",
+            condutividade,
+            "uS/cm"
+        )
+
+        # Envia os dados ao gateway por LoRa.
+        confirmado = transmitir_dados(
+            umidade,
+            temperatura,
+            condutividade,
+            sequencia
+        )
+
+        # Informa se a transmissão foi confirmada.
+        if confirmado:
+
+            print("Transmissão confirmada.")
+
+        else:
+
+            print(
+                "Não foi possível confirmar "
+                "a transmissão."
+            )
+
+        # Incrementa o número do próximo pacote.
+        sequencia += 1
+
+        # Limita a sequência a 16 bits.
+        # Após 65535, volta para zero.
+        sequencia %= 65536
+
+    else:
+
+        # Informa que houve falha na leitura do sensor.
+        print(
+            "Falha na leitura "
+            "(sem resposta ou pacote corrompido)."
+        )
+
+    # Aguarda cinco segundos até a próxima leitura.
     time.sleep(5)
