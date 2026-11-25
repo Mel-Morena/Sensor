@@ -1,52 +1,49 @@
 # 1. IMPORTAÇÃO DAS BIBLIOTECAS
 
-# UART: comunicação serial com o sensor RS485.
-# Pin: controle dos pinos GPIO.
-# SPI: comunicação com o módulo LoRa.
-from machine import UART, Pin, SPI
+# UART: comunicação serial com o sensor e com o módulo LoRa.
+# Pin: configuração e controle dos pinos GPIO.
+from machine import UART, Pin
 
-# Biblioteca para controlar o tempo e os intervalos.
+# Biblioteca para controlar os intervalos de tempo.
 import time
 
 # Biblioteca para converter bytes em valores numéricos.
 import struct
 
-# Importa o driver do módulo LoRa SX127x.
-# O arquivo lora.py deve estar salvo no Raspberry Pi Pico.
-from lora import LoRa
 
 # 2. CONFIGURAÇÃO DO SENSOR RS485
 
-# Pino GP17: transmissão UART do Pico para o conversor RS485.
-TX_PIN = 17
+# Pino GP17: transmissão UART do Pico para o RS485.
+TX_SENSOR = 17
 
-# Pino GP16: recepção UART do conversor RS485 para o Pico.
-RX_PIN = 16
+# Pino GP16: recepção UART do RS485 para o Pico.
+RX_SENSOR = 16
 
-# Pino GP18: controla a transmissão e recepção do RS485.
+# Pino GP18: controla transmissão e recepção do RS485.
 RE_DE_PIN = 18
 
 # Inicializa a UART 1 em 9600 bits por segundo.
 # TX e RX são os pinos definidos anteriormente.
-uart = UART(
+uart_sensor = UART(
     1,
     baudrate=9600,
-    tx=Pin(TX_PIN),
-    rx=Pin(RX_PIN)
+    tx=Pin(TX_SENSOR),
+    rx=Pin(RX_SENSOR)
 )
 
 # Inicializa o controle RE/DE.
-# O valor 0 mantém o módulo em modo de recepção.
+# Valor 0 mantém o conversor em modo de recepção.
 re_de = Pin(RE_DE_PIN, Pin.OUT, value=0)
+
 
 # 3. REQUISIÇÃO MODBUS AO SENSOR
 
-# Comando para solicitar 3 registradores do sensor.
+# Solicita três registradores do sensor.
 # Endereço do dispositivo: 1.
 # Função Modbus: 03 (leitura de registradores).
 # Registrador inicial: 0000.
-# Quantidade: 0003.
-# Os dois últimos bytes correspondem ao CRC.
+# Quantidade de registradores: 0003.
+# Os dois últimos bytes são o CRC.
 REQUISICAO = bytes([
     0x01, 0x03,
     0x00, 0x00,
@@ -54,43 +51,45 @@ REQUISICAO = bytes([
     0x05, 0xCB
 ])
 
-# 4. CÁLCULO DO CRC16 DO MODBUS
+
+# 4. CÁLCULO DO CRC16 MODBUS
 
 def calcular_crc16(dados):
 
     # Valor inicial padrão do CRC Modbus.
     crc = 0xFFFF
 
-    # Percorre cada byte da mensagem.
+    # Percorre todos os bytes recebidos.
     for byte in dados:
 
-        # Aplica XOR entre o CRC e o byte atual.
+        # Aplica XOR entre o CRC e o byte.
         crc ^= byte
 
-        # Processa os oito bits do byte.
+        # Processa os oito bits de cada byte.
         for _ in range(8):
 
             # Verifica se o bit menos significativo está ligado.
             if crc & 0x0001:
 
-                # Desloca o CRC e aplica o polinômio Modbus.
+                # Desloca e aplica o polinômio Modbus.
                 crc = (crc >> 1) ^ 0xA001
 
             else:
 
-                # Caso contrário, apenas desloca o CRC.
+                # Caso contrário, apenas desloca.
                 crc >>= 1
 
     # Retorna o CRC calculado.
     return crc
 
+
 # 5. FUNÇÃO DE LEITURA DO SENSOR
 
 def ler_sensor():
 
-    # Descarta qualquer dado antigo que esteja no buffer UART.
-    if uart.any():
-        uart.read()
+    # Descarta dados antigos que estejam no buffer UART.
+    if uart_sensor.any():
+        uart_sensor.read()
 
     # Coloca o conversor RS485 em modo de transmissão.
     re_de.value(1)
@@ -99,25 +98,25 @@ def ler_sensor():
     time.sleep_ms(2)
 
     # Envia a requisição Modbus ao sensor.
-    uart.write(REQUISICAO)
+    uart_sensor.write(REQUISICAO)
 
     # Aguarda o envio da requisição.
     time.sleep_ms(10)
 
-    # Volta o conversor para o modo de recepção.
+    # Retorna o conversor ao modo de recepção.
     re_de.value(0)
 
-    # Aguarda o sensor responder.
+    # Aguarda a resposta do sensor.
     time.sleep_ms(200)
 
     # Se não houver dados recebidos, retorna None.
-    if not uart.any():
+    if not uart_sensor.any():
         return None
 
-    # Lê os bytes disponíveis no buffer.
-    resposta = uart.read()
+    # Lê os bytes disponíveis.
+    resposta = uart_sensor.read()
 
-    # Verifica o tamanho e os campos principais da resposta.
+    # Verifica o tamanho e os campos da resposta.
     if (
         len(resposta) != 11
         or resposta[0] != 0x01
@@ -126,150 +125,136 @@ def ler_sensor():
     ):
         return None
 
-    # Calcula o CRC dos bytes recebidos,
-    # excluindo os dois últimos bytes.
+    # Calcula o CRC dos bytes, exceto os dois últimos.
     crc_calculado = calcular_crc16(resposta[:-2])
 
-    # Interpreta o CRC recebido como inteiro
-    # de 16 bits em ordem little-endian.
-    crc_recebido = struct.unpack(
-        '<H',
-        resposta[-2:]
-    )[0]
+    # Interpreta o CRC recebido em little-endian.
+    crc_recebido = struct.unpack('<H', resposta[-2:])[0]
 
-    # Compara os CRCs para verificar a integridade.
+    # Verifica se o CRC calculado corresponde ao recebido.
     if crc_calculado != crc_recebido:
         return None
 
-    # Converte os registradores recebidos:
-    # umidade: inteiro de 16 bits sem sinal.
-    # temperatura: inteiro de 16 bits com sinal.
-    # condutividade: inteiro de 16 bits sem sinal.
+    # Converte os três registradores recebidos.
+    # Umidade: 16 bits sem sinal.
+    # Temperatura: 16 bits com sinal.
+    # Condutividade: 16 bits sem sinal.
     umidade_bruta, temp_bruta, ec_bruta = struct.unpack(
         '>HhH',
         resposta[3:9]
     )
 
-    # Ajusta a escala da umidade e temperatura.
-    # O sensor utiliza uma casa decimal nesses valores.
+    # Ajusta a escala da umidade.
     umidade = umidade_bruta / 10.0
+
+    # Ajusta a escala da temperatura.
     temperatura = temp_bruta / 10.0
 
-    # Retorna os três valores medidos.
-    return (
-        umidade,
-        temperatura,
-        ec_bruta
-    )
+    # Retorna os valores medidos.
+    return umidade, temperatura, ec_bruta
 
-# 6. CONFIGURAÇÃO DO MÓDULO LoRa
 
-# Pinos do SPI0 para comunicação com o módulo LoRa.
-LORA_SCK = 2
-LORA_MOSI = 3
-LORA_MISO = 0
-LORA_CS = 1
+# 6. CONFIGURAÇÃO DO MÓDULO E32-900T20D
 
-# Pino DIO0: sinaliza eventos de recepção do módulo.
-LORA_DIO0 = 10
+# O E32 utiliza UART, não SPI.
+# Neste exemplo, utilizamos a UART 0 do Raspberry Pi Pico.
 
-# Inicializa o barramento SPI.
-spi = SPI(
+# GP0: transmissão do Pico para RXD do E32.
+LORA_TX = 0
+
+# GP1: recepção do Pico a partir do TXD do E32.
+LORA_RX = 1
+
+# GP6: controla o pino M0 do módulo.
+LORA_M0 = 6
+
+# GP7: controla o pino M1 do módulo.
+LORA_M1 = 7
+
+# GP8: monitora o pino AUX do módulo.
+LORA_AUX = 8
+
+# Inicializa a UART 0 em 9600 bits por segundo.
+# Configuração serial: 8 bits, sem paridade, 1 stop bit.
+uart_lora = UART(
     0,
-    baudrate=10000000,
-    polarity=0,
-    phase=0,
-    sck=Pin(LORA_SCK),
-    mosi=Pin(LORA_MOSI),
-    miso=Pin(LORA_MISO)
+    baudrate=9600,
+    bits=8,
+    parity=None,
+    stop=1,
+    tx=Pin(LORA_TX),
+    rx=Pin(LORA_RX)
 )
 
-# 7. RECEBIMENTO DE MENSAGENS LoRa
+# Configura M0 em nível baixo.
+m0 = Pin(LORA_M0, Pin.OUT, value=0)
 
-# Variável global para armazenar a resposta recebida.
-# Inicialmente não há nenhuma mensagem.
-ack_buffer = None
+# Configura M1 em nível baixo.
+m1 = Pin(LORA_M1, Pin.OUT, value=0)
+
+# Configura AUX como entrada.
+aux = Pin(LORA_AUX, Pin.IN)
+
+# M0=0 e M1=0 selecionam o modo normal.
+# Nesse modo, o módulo opera com transmissão transparente.
 
 
-# Função executada quando o rádio recebe um pacote.
-def receber_lora(mensagem):
+# 7. ESPERA PELO MÓDULO E32
 
-    # A mensagem recebida é guardada para ser
-    # processada no programa principal.
-    global ack_buffer
+def aguardar_radio(timeout=3000):
 
-    ack_buffer = mensagem
+    # Marca o início da espera.
+    inicio = time.ticks_ms()
 
-# 8. INICIALIZAÇÃO DO RÁDIO
+    # Aguarda enquanto o módulo estiver ocupado.
+    while aux.value() == 0:
 
-# Cria o objeto que controla o módulo LoRa.
-# Os parâmetros devem ser iguais aos do receptor.
-radio = LoRa(
-    spi,
+        # Verifica se o tempo máximo foi atingido.
+        if time.ticks_diff(
+            time.ticks_ms(),
+            inicio
+        ) >= timeout:
 
-    # Pino que seleciona o rádio na comunicação SPI.
-    cs=Pin(LORA_CS, Pin.OUT),
+            # Informa que o módulo não ficou pronto.
+            return False
 
-    # Pino de interrupção para sinalizar recepção.
-    rx=Pin(LORA_DIO0, Pin.IN),
+        # Pequena pausa antes de verificar novamente.
+        time.sleep_ms(10)
 
-    # Frequência de comunicação em MHz.
-    frequency=915.0,
+    # O módulo está disponível.
+    return True
 
-    # Largura de banda: 125 kHz.
-    bandwidth=125000,
 
-    # Spreading Factor: SF7.
-    spreading_factor=7,
+# Aguarda a inicialização do módulo após ligar o Pico.
+if not aguardar_radio(5000):
+    print("Aviso: módulo LoRa não ficou pronto.")
 
-    # Coding Rate: 4/5.
-    coding_rate=5,
+else:
+    print("Módulo E32 pronto.")
 
-    # Tamanho do preâmbulo: 8 símbolos.
-    preamble_length=8,
 
-    # Habilita verificação CRC dos pacotes LoRa.
-    crc=True,
+# 8. IDENTIFICAÇÃO DA ESTAÇÃO E PACOTES
 
-    # Potência de transmissão: 10 dBm.
-    tx_power=10,
-
-    # Sync Word para diferenciar a rede LoRa.
-    sync_word=0x12,
-
-    # Utiliza cabeçalho explícito.
-    implicit=False
-)
-
-# Registra a função de recepção no rádio.
-radio.on_recv(receber_lora)
-
-# 9. IDENTIFICAÇÃO DO SENSOR E PACOTES
-
-# Identificador deste dispositivo.
-# Cada sensor deverá possuir um ID diferente.
+# Identificador único desta estação.
 ID_SENSOR = "S01"
 
-# Número sequencial dos pacotes transmitidos.
-# Ajuda a identificar mensagens e confirmações.
+# Número sequencial dos pacotes.
 sequencia = 0
 
-# Tempo máximo de espera pela confirmação.
+# Tempo máximo para esperar a confirmação.
 TIMEOUT_ACK = 2000
 
-# Número máximo de tentativas de transmissão.
+# Número máximo de tentativas de envio.
 MAX_TENTATIVAS = 3
 
-# 10. FUNÇÃO DE TRANSMISSÃO LoRa COM ACK
+
+# 9. TRANSMISSÃO DOS DADOS E ESPERA PELO ACK
 
 def transmitir_dados(umidade, temperatura, ec, seq):
 
-    # Declara que a variável ack_buffer será global.
-    global ack_buffer
-
-    # Monta a mensagem de dados em formato textual.
+    # Monta a mensagem com os dados do sensor.
     # Exemplo:
-    # DATA;S01;15;63.2;24.8;1250
+    # DATA;S01;15;45.5;23.2;1250
     mensagem = (
         "DATA;"
         + ID_SENSOR + ";"
@@ -277,84 +262,108 @@ def transmitir_dados(umidade, temperatura, ec, seq):
         + "{:.1f}".format(umidade) + ";"
         + "{:.1f}".format(temperatura) + ";"
         + str(ec)
+        + "\n"
     )
 
-    # Converte a mensagem para bytes.
+    # Converte a mensagem de texto para bytes.
     pacote = mensagem.encode()
 
-    # Realiza as tentativas de transmissão.
+    # Monta o ACK esperado para esta transmissão.
+    # Exemplo: ACK;S01;15
+    ack_esperado = (
+        "ACK;"
+        + ID_SENSOR + ";"
+        + str(seq)
+    )
+
+    # Realiza até três tentativas.
     for tentativa in range(1, MAX_TENTATIVAS + 1):
 
-        # Limpa a confirmação anterior.
-        ack_buffer = None
+        # Limpa mensagens anteriores que estejam no buffer.
+        if uart_lora.any():
+            uart_lora.read()
+
+        # Aguarda o rádio estar livre.
+        if not aguardar_radio():
+
+            # Informa que o rádio está ocupado.
+            print("Rádio ocupado ou indisponível.")
+
+            # Passa para a próxima tentativa.
+            continue
 
         # Mostra qual tentativa está sendo realizada.
         print(
-            "Transmitindo pacote",
+            "Enviando pacote",
             seq,
             "- tentativa",
             tentativa
         )
 
-        # Envia o pacote pelo rádio.
-        radio.send(pacote)
+        # Envia os dados pelo E32.
+        uart_lora.write(pacote)
 
-        # Coloca o rádio em modo de recepção
-        # para aguardar a confirmação do gateway.
-        radio.recv()
+        # Aguarda o módulo concluir a transmissão.
+        if not aguardar_radio():
+
+            # Informa possível falha no envio.
+            print("Timeout durante transmissão.")
+
+            # Tenta novamente.
+            continue
 
         # Marca o início da espera pelo ACK.
         inicio = time.ticks_ms()
 
-        # Aguarda até o ACK chegar ou o timeout terminar.
+        # Buffer para acumular a resposta recebida.
+        resposta_buffer = b""
+
+        # Aguarda até receber o ACK ou atingir o timeout.
         while time.ticks_diff(
             time.ticks_ms(),
             inicio
         ) < TIMEOUT_ACK:
 
-            # Verifica se uma mensagem foi recebida.
-            if ack_buffer is not None:
+            # Verifica se há dados recebidos pela UART.
+            if uart_lora.any():
 
-                # Converte os bytes recebidos em texto.
-                resposta = ack_buffer.decode()
+                # Lê os bytes disponíveis.
+                recebido = uart_lora.read()
 
-                # Separa os campos da confirmação.
-                campos = resposta.split(";")
+                # Acrescenta os bytes ao buffer.
+                if recebido:
+                    resposta_buffer += recebido
 
-                # Confirma se a resposta é do pacote enviado.
-                if (
-                    len(campos) == 3
-                    and campos[0] == "ACK"
-                    and campos[1] == ID_SENSOR
-                    and campos[2] == str(seq)
-                ):
+                # Converte a resposta acumulada em texto.
+                resposta_texto = resposta_buffer.decode(
+                    "utf-8",
+                    "ignore"
+                )
 
-                    # Confirma que o gateway reconheceu o pacote.
-                    print("ACK recebido:", resposta)
+                # Verifica se o ACK esperado chegou.
+                if ack_esperado in resposta_texto:
 
-                    # Retorna True: transmissão confirmada.
-                    radio.standby()
+                    # Mostra a confirmação recebida.
+                    print("ACK recebido:", ack_esperado)
+
+                    # Retorna True: pacote confirmado.
                     return True
 
-            # Pequeno intervalo para não sobrecarregar o processador.
+            # Pequeno intervalo entre verificações.
             time.sleep_ms(20)
 
-        # Se o tempo terminou sem confirmação,
-        # mostra que a tentativa falhou.
+        # Se o tempo terminou sem ACK, informa a falha.
         print("Timeout: ACK não recebido.")
 
-    # Se todas as tentativas falharem,
-    # retorna o rádio ao modo standby.
-    radio.standby()
-
-    # Retorna False: não houve confirmação.
+    # Se todas as tentativas falharem, retorna False.
     return False
 
-# 11. PROGRAMA PRINCIPAL
+
+# 10. PROGRAMA PRINCIPAL
 
 while True:
 
-    # Realiza a leitura dos sensores.
+    # Realiza a leitura do sensor.
     dados = ler_sensor()
 
     # Verifica se a leitura foi válida.
@@ -363,7 +372,7 @@ while True:
         # Separa os valores recebidos.
         umidade, temperatura, condutividade = dados
 
-        # Mostra os valores no console.
+        # Mostra os resultados no console.
         print("------------------------------")
 
         print(
@@ -382,7 +391,7 @@ while True:
             "uS/cm"
         )
 
-        # Envia os dados ao gateway por LoRa.
+        # Transmite os valores ao gateway pelo E32.
         confirmado = transmitir_dados(
             umidade,
             temperatura,
@@ -390,28 +399,27 @@ while True:
             sequencia
         )
 
-        # Informa se a transmissão foi confirmada.
+        # Verifica se o gateway confirmou o recebimento.
         if confirmado:
 
+            # Informa que a transmissão foi confirmada.
             print("Transmissão confirmada.")
 
         else:
 
-            print(
-                "Não foi possível confirmar "
-                "a transmissão."
-            )
+            # Informa que não houve confirmação.
+            print("Falha na confirmação da transmissão.")
 
-        # Incrementa o número do próximo pacote.
+        # Incrementa a sequência do próximo pacote.
         sequencia += 1
 
         # Limita a sequência a 16 bits.
-        # Após 65535, volta para zero.
+        # Após 65535, retorna para zero.
         sequencia %= 65536
 
     else:
 
-        # Informa que houve falha na leitura do sensor.
+        # Informa falha na leitura do sensor.
         print(
             "Falha na leitura "
             "(sem resposta ou pacote corrompido)."
